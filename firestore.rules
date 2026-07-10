@@ -1,0 +1,64 @@
+rules_version = '2';
+// =====================================================================
+// Paste this ENTIRE file into: Firebase Console → Firestore Database
+// → Rules tab → replace everything → Publish.
+//
+// Model:
+//   shops/{shopId}                      -> bootstrap flag (has a manager been created yet?)
+//   shops/{shopId}/users/{uid}          -> one doc per signed-in person: { role, name }
+//   shops/{shopId}/invites/{code}       -> one-time codes the manager generates for new assistants
+//   shops/{shopId}/data/state           -> the single shared inventory/sales/ledger snapshot
+// =====================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function userDoc(shopId) {
+      return get(/databases/$(database)/documents/shops/$(shopId)/users/$(request.auth.uid));
+    }
+    function isMember(shopId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/shops/$(shopId)/users/$(request.auth.uid));
+    }
+    function isManager(shopId) {
+      return isMember(shopId) && userDoc(shopId).data.role == 'manager';
+    }
+
+    match /shops/{shopId} {
+      allow read: if isSignedIn();
+      // First person ever to sign up for this shopId becomes manager and sets this flag.
+      allow create, update: if isSignedIn() && request.resource.data.managerCreated == true;
+    }
+
+    match /shops/{shopId}/users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isManager(shopId));
+      // Becoming the manager: only if no manager exists yet for this shop.
+      allow create: if isSignedIn() && request.auth.uid == uid && request.resource.data.role == 'manager'
+                    && !exists(/databases/$(database)/documents/shops/$(shopId));
+      // Becoming an assistant: only via a valid, unused invite whose role is 'assistant'.
+      allow create: if isSignedIn() && request.auth.uid == uid && request.resource.data.role == 'assistant'
+                    && exists(/databases/$(database)/documents/shops/$(shopId)/invites/$(request.resource.data.inviteCode))
+                    && get(/databases/$(database)/documents/shops/$(shopId)/invites/$(request.resource.data.inviteCode)).data.used == false
+                    && get(/databases/$(database)/documents/shops/$(shopId)/invites/$(request.resource.data.inviteCode)).data.role == 'assistant';
+      // Only your own display name can be changed; role is never editable by the user.
+      allow update: if isSignedIn() && request.auth.uid == uid
+                    && request.resource.data.role == resource.data.role;
+      allow delete: if isManager(shopId);
+    }
+
+    match /shops/{shopId}/invites/{code} {
+      allow read: if isSignedIn();
+      allow create: if isManager(shopId);
+      // Redeeming: only flips used=false -> true, nothing else about the invite changes.
+      allow update: if isSignedIn() && resource.data.used == false
+                    && request.resource.data.used == true
+                    && request.resource.data.role == resource.data.role;
+      allow delete: if isManager(shopId);
+    }
+
+    match /shops/{shopId}/data/{docId} {
+      allow read, write: if isMember(shopId);
+    }
+  }
+}

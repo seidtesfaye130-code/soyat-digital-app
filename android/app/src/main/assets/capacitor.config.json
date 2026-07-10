@@ -1,0 +1,6 @@
+{
+	"appId": "com.soyat.digital",
+	"appName": "Soyat Digital",
+	"webDir": "www",
+	"bundledWebRuntime": false
+}
